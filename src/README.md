@@ -1,7 +1,7 @@
 #### Apps
 
-`EcsTest` A simple ecs engine. Follows a generic design
+`EcsTest` A simple ecs engine.
 
 #### Tests
 
-Use catch2, `test_[APP]` are targets for tests
+`test_[APP]` are targets for tests

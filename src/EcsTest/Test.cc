@@ -184,8 +184,8 @@ TEST_CASE( "verify ComponentManager" , "[ecs]") {
     REQUIRE( manager.Size() == 2 );
 
     SECTION("Max Size Add/Remove/Get") {
-        size_t maxcount = Ecs::MAX_ENTITY;
-        for (size_t i = 0; i < maxcount; ++i) {
+        int maxcount = (int)Ecs::MAX_ENTITY;
+        for (int i = 0; i < maxcount; ++i) {
             manager.AddComponent<A>(i, {i, "NonSense"});
             manager.AddComponent<B>(i, {i, 4.2f});
         }
@@ -196,9 +196,8 @@ TEST_CASE( "verify ComponentManager" , "[ecs]") {
         // remove A with even id, B with odd id
         for (int i = 0; i < maxcount; i+=2)
             manager.RemoveComponent<A>(i);
-        Ecs::ComponentId_T bid = manager.GetComponentId<B>();
         for (int i = 1; i < maxcount; i+=2)
-            manager.RemoveComponent(i, bid);
+            manager.RemoveComponent<B>(i);
 
         auto& TA = manager.GetComponent<A>(3);  
         REQUIRE( TA.i == 3);
@@ -212,3 +211,94 @@ TEST_CASE( "verify ComponentManager" , "[ecs]") {
 // ----------------------------------------------------------------
 // EcsEngine
 // ----------------------------------------------------------------
+
+TEST_CASE( "verify EcsEngine" , "[ecs]") {
+    using namespace Ecs;
+    static EcsEngine& ecs = EcsEngine::GetInstance();
+
+    struct IntComponent { int i; };
+    struct FloatComponent { float f; };
+
+    struct IntInc : public Ecs::System {
+        void OnSystemRegister() override {
+            REQUIRE(mSignature.none());
+            mSignature.set((size_t)ecs.GetComponentId<IntComponent>(),true);
+        }
+        void Update() override {
+            for (const auto &entity : mEntities) {
+                IntComponent& component =  ecs.GetComponent<IntComponent>(entity);
+                component.i += 1;
+            }
+        }
+    };
+    struct FloatInc : public Ecs::System {
+        void OnSystemRegister() override {
+            REQUIRE(mSignature.none());
+            mSignature.set(ecs.GetComponentId<FloatComponent>(),true);
+        }
+        void Update() override {
+            for (const auto &entity : mEntities) {
+                FloatComponent& component = ecs.GetComponent<FloatComponent>(entity);
+                component.f += .1f;
+            }
+        }
+    };
+    struct NumMul : public Ecs::System {
+        void OnSystemRegister() override {
+            REQUIRE(mSignature.none());
+            mSignature.set(ecs.GetComponentId<IntComponent>(),true);
+            mSignature.set(ecs.GetComponentId<FloatComponent>(),true);
+        }
+        void Update() override {
+            for (const auto &entity : mEntities) {
+                auto& componentI = ecs.GetComponent<IntComponent>(entity);
+                auto& componentF = ecs.GetComponent<FloatComponent>(entity);
+                componentI.i *= 2;
+                componentF.f *= .5f;
+            }
+        }
+    };
+
+
+    // component
+    ecs.ResisterComponent<IntComponent>();
+    ecs.ResisterComponent<FloatComponent>();
+    // system
+    auto intInc = ecs.ResisterSystem<IntInc>();
+    auto floatInc = ecs.ResisterSystem<FloatInc>();
+    auto numMul = ecs.ResisterSystem<NumMul>();
+    // ett
+    auto ett1 = ecs.CreateEntity();
+    auto ett2 = ecs.CreateEntity();
+    auto ett3 = ecs.CreateEntity();
+    ecs.AddComponent<IntComponent>(ett1, {1});
+    ecs.AddComponent<FloatComponent>(ett2, {2.2f});
+    ecs.AddComponent<IntComponent>(ett3, {3});
+    ecs.AddComponent<FloatComponent>(ett3, {3.3f});
+
+    SECTION("Demo sum first") {
+        for (int i = 0; i < 2; ++i) {
+            intInc->Update();
+            floatInc->Update();
+            numMul->Update();
+        }
+
+        REQUIRE(ecs.GetComponent<IntComponent>(ett1).i == ((1+1)*2+1)*2);
+        REQUIRE(ecs.GetComponent<FloatComponent>(ett2).f == Approx((((2.2f+0.1f)*0.5f)+0.1f)*0.5f));
+        REQUIRE(ecs.GetComponent<IntComponent>(ett3).i == ((3+1)*2+1)*2);
+        REQUIRE(ecs.GetComponent<FloatComponent>(ett3).f == Approx((((3.3f+0.1f)*0.5f)+0.1f)*0.5f));
+    }
+
+    SECTION("Demo mul first") {
+        for (int i = 0; i < 2; ++i) {
+            numMul->Update();
+            intInc->Update();
+            floatInc->Update();
+        }
+
+        REQUIRE(ecs.GetComponent<IntComponent>(ett1).i == (((1*2)+1)*2)+1);
+        REQUIRE(ecs.GetComponent<FloatComponent>(ett2).f == Approx((((2.2f*0.5f)+0.1f)*0.5f)+0.1f));
+        REQUIRE(ecs.GetComponent<IntComponent>(ett3).i == (((3*2)+1)*2)+1);
+        REQUIRE(ecs.GetComponent<FloatComponent>(ett3).f == Approx((((3.3f*0.5f)+0.1f)*0.5f)+0.1f));
+    }
+}

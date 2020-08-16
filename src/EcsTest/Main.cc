@@ -9,9 +9,12 @@
 #include "glm/mat4x4.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 #include "shaders.h"
+
 #include "Movement.h"
+#include "EcsEngine.h"
 
 using namespace Oryol;
+using namespace Ecs;
 
 // derived application class
 class Canoe : public App {

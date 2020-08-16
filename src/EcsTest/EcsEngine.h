@@ -20,76 +20,38 @@ Head-only ECS lib
 using namespace std;
 
 namespace Ecs {
+namespace Internal {
+    class SystemManager;  // forward for friend declaration in System
+}
+using namespace Internal;
 
 // ecs_common.h
 //----------------------------------------------------------------
-
 using EntityId_T = uint32_t;
 const EntityId_T MAX_ENTITY = 1000;
 
 using ComponentId_T = uint8_t;
-const ComponentId_T MAX_COMPONENT = 32;
-
-using SystemId_T = uint8_t;
-// no bitset nor compact addresses needed for systems, thus no MAX_SYSTEM
+const ComponentId_T MAX_COMPONENT = 128;
 
 using Signature_T = bitset<MAX_COMPONENT>;
 
-// ecs_engine.h
-//----------------------------------------------------------------
-class EcsEngine {
+class System {
     public:
-        //----------------------------------------------------------------
-        // Singleton
-        //----------------------------------------------------------------
-        static EcsEngine& GetInstance() {
-            static EcsEngine instance;
-            return instance;
-        }
+        /**
+         *  Please set mSignature correctly
+         **/
+        virtual void OnSystemRegister() = 0;
+        virtual void Update() = 0;
 
-        EcsEngine(EcsEngine const&) = delete;
-        void operator=(EcsEngine const&) = delete;
 
-        //----------------------------------------------------------------
-        // Functions
-        //----------------------------------------------------------------
-        EntityId_T CreateEntity() {
-            return mEntityManager.CreateEntity();
-        }
+    protected:
+        set<EntityId_T> mEntities;
+        Signature_T mSignature;
 
-        void DestroyEntity(EntityId_T entity) {
-            mEntityManager.DestroyEntity(entity);
-            mSystemManager.OnEntityDestroy(entity);
-        }
-
-        template <typename T>
-        void ResisterComponent() {
-        }
-
-        template <typename T>
-        void AddComponent(EntityId_T entity, T component) {
-        }
-
-        template <typename T>
-        void RemoveComponent(EntityId_T entity, T component) {
-
-        }
-
-        template <typename T>
-        T& GetComponent(EntityId_T entity) {
-
-        }
-
-    private:
-        Internal::EntityManager mEntityManager;
-        Internal::ComponentManager mComponentManager;
-        Internal::SystemManager mSystemManager;
-
-        EcsEngine() {}
+    friend class SystemManager;
 };
 
 namespace Internal {
-
 // ecs_entity.h
 //----------------------------------------------------------------
 /* 
@@ -164,7 +126,6 @@ IComponentArray:
         => ComponentManager.RemoveComponent(entity, typeid) for all typeid
     B: ComponentManager.OnEntityDestroy()
         => ComponentArray<T>.OnEntityDestroy() for all T
-    A sounds better
 */
 class IComponentArray {
     
@@ -244,7 +205,6 @@ ComponentManager:
     maintain ComponentArray with different type
 
     index ComponentArray<T> using string pointer of T type_info::name
-    ALl component has to be registed on init.
 */
 class ComponentManager {
     public:
@@ -265,26 +225,32 @@ class ComponentManager {
         }
 
         template <typename T>
-        void AddComponent(EntityId_T entity, T component) {
+        ComponentId_T AddComponent(EntityId_T entity, T component) {
             const char* name = typeid(T).name();
             o_assert_dbg(mName2Id.find(name) != mName2Id.end() && "Component Not Registered");
 
-            static_pointer_cast<ComponentArray<T>>(mId2Array[mName2Id[name]])->AddComponent(entity, component);
+            ComponentId_T id = mName2Id[name];
+            static_pointer_cast<ComponentArray<T>>(mId2Array[id])->AddComponent(entity, component);
+
+            return id;
         }
         
         template <typename T>
-        void RemoveComponent(EntityId_T entity) {
+        ComponentId_T RemoveComponent(EntityId_T entity) {
             const char* name = typeid(T).name();
             o_assert_dbg(mName2Id.find(name) != mName2Id.end() && "Component Not Registered");
 
-            static_pointer_cast<ComponentArray<T>>(mId2Array[mName2Id[name]])->RemoveComponent(entity);
+            ComponentId_T id = mName2Id[name];
+            static_pointer_cast<ComponentArray<T>>(mId2Array[id])->RemoveComponent(entity);
+
+            return id;
         }
 
-        void RemoveComponent(EntityId_T entity, ComponentId_T componentId) {
-            o_assert_dbg(componentId < mSize && "Component Not Registered");
+        // void RemoveComponent(EntityId_T entity, ComponentId_T componentId) {
+        //     o_assert_dbg(componentId < mSize && "Component Not Registered");
 
-            mId2Array[componentId]->RemoveComponent(entity);
-        }
+        //     mId2Array[componentId]->RemoveComponent(entity);
+        // }
 
         void RemoveAllComponents(EntityId_T entity, Signature_T signature) {
             for (size_t i = 0; i < mSize; ++i) {
@@ -308,8 +274,9 @@ class ComponentManager {
             const char* name = typeid(T).name();
             o_assert_dbg(mName2Id.find(name) != mName2Id.end() && "Component Not Registered");
 
-            return mName2Id[name];
+            return mName2Id.at(name);
         }
+
     private:
         ComponentId_T mSize;
         unordered_map<const char *, ComponentId_T> mName2Id;
@@ -320,30 +287,25 @@ class ComponentManager {
 // ecs_system.h
 // ----------------------------------------------------------------
 
-class System {
-    friend class SystemManager;
-
-    // Austin says set is faster
-    set<EntityId_T> mEntities;
-    const Signature_T mSignature;
-};
 
 /*
 SystemManager
     Maintain Systems and entites list in each system
-
-    Usually you want an empty component dedicate to each system
 */
 class SystemManager {
     public:
         SystemManager() {}
 
         template <typename T>
-        void RegisterSystem(Signature_T signature) {
+        shared_ptr<T> RegisterSystem() {
             const char* name = typeid(T).name();
-            o_assert_dbg(mName2System.find(name) == mName2Id.end() && "System Registered");
+            static_assert(std::is_base_of<System, T>::value, "T not derived from System");
+            o_assert_dbg(mName2System.find(name) == mName2System.end() && "System Registered");
 
-            mName2System[name] = make_shared<T>();
+            auto ptr = make_shared<T>();
+            mName2System[name] = static_pointer_cast<System>(ptr);
+            ptr->OnSystemRegister();
+            return ptr;
         }
         
 
@@ -355,9 +317,9 @@ class SystemManager {
             }
         }
 
-        void OnEntitySignatureUpdate(EntityId_T entity, Signature_T signature) {
+        void OnEntitySignatureUpdate(EntityId_T entity, Signature_T const &signature) {
             // validate all systems
-            for (auto const& pair : mName2System) {
+            for (auto const &pair : mName2System) {
                 shared_ptr<System> system = pair.second;
                 if ((signature & system->mSignature) == system->mSignature) {
                     system->mEntities.insert(entity);
@@ -367,12 +329,115 @@ class SystemManager {
             }
         }
 
-        int Size() const {return mName2System.size();}
+        template <typename T>
+        shared_ptr<T> GetSystem() {
+            const char* name = typeid(T).name();
+            o_assert_dbg(mName2System.find(name) != mName2System.end() && "System Not Registerd");
+
+            return mName2System[name];
+        }
+
+        size_t Size() const {
+            return mName2System.size();
+        }
     private:
         unordered_map<const char *, shared_ptr<System>> mName2System;
 };
 
-}
-}
+} // namespace Internal
+
+// ecs_engine.h
+//----------------------------------------------------------------
+class EcsEngine {
+    public:
+        //----------------------------------------------------------------
+        // Singleton
+        //----------------------------------------------------------------
+        EcsEngine(EcsEngine const&) = delete;
+        void operator=(EcsEngine const&) = delete;
+
+        static EcsEngine& GetInstance() {
+            static EcsEngine instance;
+            return instance;
+        }
+
+        //----------------------------------------------------------------
+        // Functions
+        //----------------------------------------------------------------
+        
+        EntityId_T CreateEntity() {
+            return mEntityManager->CreateEntity();
+        }
+
+        void DestroyEntity(EntityId_T entity) {
+            Signature_T signature = mEntityManager->GetSignature(entity);
+            mComponentManager->RemoveAllComponents(entity, move(signature));
+            mSystemManager->OnEntityDestroy(entity);
+            mEntityManager->DestroyEntity(entity);
+        }
+
+        // ----------------------------------------------------------------
+
+        template <typename T>
+        void ResisterComponent() { 
+            mComponentManager->RegisterComponent<T>();
+        }
+
+        template <typename T>
+        void AddComponent(EntityId_T entity, T component) {
+            auto id = mComponentManager->AddComponent<T>(entity, move(component));
+            auto signature = mEntityManager->GetSignature(entity);
+            signature.set(id, true);
+            mSystemManager->OnEntitySignatureUpdate(entity, signature);
+            mEntityManager->SetSignature(entity, move(signature));
+        }
+
+        template <typename T>
+        void RemoveComponent(EntityId_T entity, T component) {
+            auto id = mComponentManager->RemoveComponent<T>(entity);
+            auto signature = mEntityManager->GetSignature(entity);
+            signature.set(id, false);
+            mSystemManager->OnEntitySignatureUpdate(entity, signature);
+            mEntityManager->SetSignature(entity, move(signature));
+        }
+
+        template <typename T>
+        T& GetComponent(EntityId_T entity) {
+            return mComponentManager->GetComponent<T>(entity);
+        }
+
+        template <typename T>
+        ComponentId_T GetComponentId() const { 
+            return mComponentManager->GetComponentId<T>();
+        }
+
+        // ---------------------------------------------------------------------
+
+        template <typename T>
+        shared_ptr<T> ResisterSystem() {
+            shared_ptr<T> system = mSystemManager->RegisterSystem<T>();
+            static_pointer_cast<System>(system)->OnSystemRegister();
+            return system;
+        }
+
+        template <typename T>
+        shared_ptr<T> GetSystem() {
+            return mSystemManager->GetSystem<T>();
+        }
+
+    private:
+        unique_ptr<EntityManager> mEntityManager;
+        unique_ptr<ComponentManager> mComponentManager;
+        unique_ptr<SystemManager> mSystemManager;
+
+        EcsEngine() {
+            mEntityManager = make_unique<EntityManager>();
+            mComponentManager = make_unique<ComponentManager>();
+            mSystemManager = make_unique<SystemManager>();
+        }
+};
+
+} // namespace Ecs
+
 
 #endif  // ECS_ENGINE_H_
